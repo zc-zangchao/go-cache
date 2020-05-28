@@ -42,6 +42,7 @@ type cache struct {
 	items             map[string]Item
 	mu                sync.RWMutex
 	onEvicted         func(string, interface{})
+	onItemsEvicted    func([]KeyAndValue)
 	janitor           *janitor
 }
 
@@ -922,14 +923,15 @@ func (c *cache) delete(k string) (interface{}, bool) {
 	return nil, false
 }
 
-type keyAndValue struct {
-	key   string
-	value interface{}
+type KeyAndValue struct {
+	Key   string
+	Value interface{}
 }
 
 // Delete all expired items from the cache.
 func (c *cache) DeleteExpired() {
-	var evictedItems []keyAndValue
+	var evictedItems []KeyAndValue
+	var evictedItemsCache []KeyAndValue
 	now := time.Now().UnixNano()
 	c.mu.Lock()
 	for k, v := range c.items {
@@ -937,13 +939,21 @@ func (c *cache) DeleteExpired() {
 		if v.Expiration > 0 && now > v.Expiration {
 			ov, evicted := c.delete(k)
 			if evicted {
-				evictedItems = append(evictedItems, keyAndValue{k, ov})
+				evictedItems = append(evictedItems, KeyAndValue{k, ov})
+			}
+			if c.onItemsEvicted != nil {
+				evictedItemsCache = append(evictedItemsCache, KeyAndValue{k, v.Object})
 			}
 		}
 	}
 	c.mu.Unlock()
 	for _, v := range evictedItems {
-		c.onEvicted(v.key, v.value)
+		c.onEvicted(v.Key, v.Value)
+	}
+
+	// expired items
+	if c.onItemsEvicted != nil && len(evictedItemsCache) > 0 {
+		c.onItemsEvicted(evictedItemsCache)
 	}
 }
 
@@ -953,6 +963,14 @@ func (c *cache) DeleteExpired() {
 func (c *cache) OnEvicted(f func(string, interface{})) {
 	c.mu.Lock()
 	c.onEvicted = f
+	c.mu.Unlock()
+}
+
+// Sets an (optional) function that is called with the Key and Value when
+// items are evicted from the cache. Called when the DeleteExpired function is called. Set to nil to disable.
+func (c *cache) OnItemsEvicted(f func([]KeyAndValue)) {
+	c.mu.Lock()
+	c.onItemsEvicted = f
 	c.mu.Unlock()
 }
 
